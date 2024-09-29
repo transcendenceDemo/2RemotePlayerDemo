@@ -39,6 +39,15 @@ let clientPrediction = {
     paddle2_y: 0.5
 };
 
+
+let lastBallUpdate = null;
+let ballVelocity = { x: 0, y: 0 };
+
+
+
+
+
+
 function initGame() {
     fetch('/api/game/', { method: 'POST' })
         .then(response => response.json())
@@ -94,6 +103,22 @@ function gameLoop(currentTime) {
 
 function updateGameState(newState) {
     lastServerUpdate = newState;
+    
+    // Calculate ball velocity based on server updates
+    if (lastBallUpdate) {
+        const timeDiff = Date.now() - lastBallUpdate.time;
+        ballVelocity = {
+            x: (newState.ball_x - lastBallUpdate.x) / timeDiff * 1000,
+            y: (newState.ball_y - lastBallUpdate.y) / timeDiff * 1000
+        };
+    }
+    
+    lastBallUpdate = {
+        x: newState.ball_x,
+        y: newState.ball_y,
+        time: Date.now()
+    };
+    
     Object.assign(gameState, newState);
     
     // Update client prediction with server state
@@ -114,9 +139,10 @@ function updatePaddlePositions() {
 }
 
 function updateBallPosition(deltaTime) {
-    if (lastServerUpdate) {
-        gameState.ball_x += gameState.ball_dx * deltaTime * 60;
-        gameState.ball_y += gameState.ball_dy * deltaTime * 60;
+    if (lastBallUpdate) {
+        const timeSinceUpdate = (Date.now() - lastBallUpdate.time) / 1000;
+        gameState.ball_x = lastBallUpdate.x + ballVelocity.x * timeSinceUpdate;
+        gameState.ball_y = lastBallUpdate.y + ballVelocity.y * timeSinceUpdate;
     }
 }
 
@@ -137,15 +163,22 @@ function drawGame() {
 
     player1ScoreElement.textContent = interpolatedState.player1_score;
     player2ScoreElement.textContent = interpolatedState.player2_score;
+    // Add this to your drawGame function
+	ctx.fillStyle = 'white';
+	ctx.font = '12px Arial';
+	ctx.fillText(`Ball Velocity: ${ballVelocity.x.toFixed(3)}, ${ballVelocity.y.toFixed(3)}`, 10, 20);
+	ctx.fillText(`Last Update: ${Date.now() - lastBallUpdate.time}ms ago`, 10, 40);
 }
 
 function interpolateGameState(serverState, clientState) {
-    const interpolationFactor = 0.3;
+    const now = Date.now();
+    const timeSinceUpdate = (now - lastBallUpdate.time) / 1000;
+    
     return {
-        ball_x: serverState.ball_x,
-        ball_y: serverState.ball_y,
-        paddle1_y: serverState.paddle1_y + (clientState.paddle1_y - serverState.paddle1_y) * interpolationFactor,
-        paddle2_y: serverState.paddle2_y + (clientState.paddle2_y - serverState.paddle2_y) * interpolationFactor,
+        ball_x: lastBallUpdate.x + ballVelocity.x * timeSinceUpdate,
+        ball_y: lastBallUpdate.y + ballVelocity.y * timeSinceUpdate,
+        paddle1_y: serverState.paddle1_y + (clientState.paddle1_y - serverState.paddle1_y) * 0.3,
+        paddle2_y: serverState.paddle2_y + (clientState.paddle2_y - serverState.paddle2_y) * 0.3,
         player1_score: serverState.player1_score,
         player2_score: serverState.player2_score
     };

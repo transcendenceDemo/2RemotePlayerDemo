@@ -4,6 +4,8 @@ from django.core.cache import cache
 from channels.db import database_sync_to_async
 from .models import Game
 import asyncio
+import time
+
 
 class GameConsumer(AsyncWebsocketConsumer):
     async def connect(self):
@@ -27,7 +29,17 @@ class GameConsumer(AsyncWebsocketConsumer):
         elif player_count == 2:
             # Start the game when the second player joins
             await self.start_game()
-
+    def interpolate_game_state(self, previous_state, current_state, alpha):
+        return {
+        'ball_x': previous_state['ball_x'] + (current_state['ball_x'] - previous_state['ball_x']) * alpha,
+        'ball_y': previous_state['ball_y'] + (current_state['ball_y'] - previous_state['ball_y']) * alpha,
+        'paddle1_y': previous_state['paddle1_y'] + (current_state['paddle1_y'] - previous_state['paddle1_y']) * alpha,
+        'paddle2_y': previous_state['paddle2_y'] + (current_state['paddle2_y'] - previous_state['paddle2_y']) * alpha,
+        'player1_score': current_state['player1_score'],
+        'player2_score': current_state['player2_score'],
+        'ball_dx': current_state['ball_dx'],
+        'ball_dy': current_state['ball_dy'],
+         }
 
     async def disconnect(self, close_code):
         # Leave the game group
@@ -75,9 +87,18 @@ class GameConsumer(AsyncWebsocketConsumer):
             'message': message
         }))
 
-
     async def receive(self, text_data):
         data = json.loads(text_data)
+
+        # Rate limiting
+        current_time = time.time()
+        cache_key = f'last_update_{self.game_id}_{self.channel_name}'
+        last_update_time = cache.get(cache_key, 0)
+        
+        if current_time - last_update_time < 0.016:  # Limit to about 60 updates per second
+            return
+
+        cache.set(cache_key, current_time, 1)  # Set expiration to 1 second
 
         # Update game state (paddle positions, etc.) and cache it
         await self.update_game_state(data)
@@ -90,45 +111,43 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'message': await self.get_game_state()
             }
         )
-
+    
     async def game_update(self, event):
-        message = event['message']
-        await self.send(text_data=json.dumps(message))
+       message = event['message']
+       previous_state = await self.get_game_state()
+       current_state = message
+    
+       # Send multiple interpolated states
+       for i in range(3):  # Send 3 interpolated states
+          alpha = (i + 1) / 3
+          interpolated_state = self.interpolate_game_state(previous_state, current_state, alpha)
+          await self.send(text_data=json.dumps(interpolated_state))
+          await asyncio.sleep(0.016)  # Wait for about 16ms between updates
+   
+
 
     async def update_ball_position(self):
-        """
-        Periodically update the ball's position, handle collisions, and update the game state.
-        """
+        FIXED_TIME_STEP = 1 / 60  # 60 FPS
+        accumulator = 0
+        last_time = time.time()
+
         while True:
-            await asyncio.sleep(0.05)  # Update every 50ms
+            current_time = time.time()
+            frame_time = current_time - last_time
+            last_time = current_time
+
+            accumulator += frame_time
 
             game_state = await self.get_game_state()
             if game_state:
+                while accumulator >= FIXED_TIME_STEP:
+                    self.update_physics(game_state, FIXED_TIME_STEP)
+                    accumulator -= FIXED_TIME_STEP
+
                 # Check for the end condition (player reaches 5 goals)
                 if game_state['player1_score'] >= 5 or game_state['player2_score'] >= 5:
                     await self.end_game(game_state)
                     break
-
-                # Update the ball position
-                game_state['ball_x'] += game_state['ball_dx']
-                game_state['ball_y'] += game_state['ball_dy']
-
-                # Ball collision with top and bottom walls
-                if game_state['ball_y'] <= 0 or game_state['ball_y'] >= 1:
-                    game_state['ball_dy'] *= -1
-
-                # Ball collision with paddles
-                if (game_state['ball_x'] <= 0.05 and game_state['ball_y'] >= game_state['paddle1_y'] - 0.1 and game_state['ball_y'] <= game_state['paddle1_y'] + 0.1) or \
-                   (game_state['ball_x'] >= 0.95 and game_state['ball_y'] >= game_state['paddle2_y'] - 0.1 and game_state['ball_y'] <= game_state['paddle2_y'] + 0.1):
-                    game_state['ball_dx'] *= -1
-
-                # Scoring
-                if game_state['ball_x'] <= 0:
-                    game_state['player2_score'] += 1
-                    self.reset_ball(game_state)
-                if game_state['ball_x'] >= 1:
-                    game_state['player1_score'] += 1
-                    self.reset_ball(game_state)
 
                 # Cache the updated game state
                 await self.save_game_state(game_state)
@@ -141,6 +160,30 @@ class GameConsumer(AsyncWebsocketConsumer):
                         'message': game_state
                     }
                 )
+
+            await asyncio.sleep(0.016)  # Approximately 60 FPS
+
+    def update_physics(self, game_state, dt):
+        # Update the ball position
+        game_state['ball_x'] += game_state['ball_dx'] * dt * 60
+        game_state['ball_y'] += game_state['ball_dy'] * dt * 60
+
+        # Ball collision with top and bottom walls
+        if game_state['ball_y'] <= 0 or game_state['ball_y'] >= 1:
+            game_state['ball_dy'] *= -1
+
+        # Ball collision with paddles
+        if (game_state['ball_x'] <= 0.05 and game_state['ball_y'] >= game_state['paddle1_y'] - 0.1 and game_state['ball_y'] <= game_state['paddle1_y'] + 0.1) or \
+           (game_state['ball_x'] >= 0.95 and game_state['ball_y'] >= game_state['paddle2_y'] - 0.1 and game_state['ball_y'] <= game_state['paddle2_y'] + 0.1):
+            game_state['ball_dx'] *= -1
+
+        # Scoring
+        if game_state['ball_x'] <= 0:
+            game_state['player2_score'] += 1
+            self.reset_ball(game_state)
+        if game_state['ball_x'] >= 1:
+            game_state['player1_score'] += 1
+            self.reset_ball(game_state)
 
     def reset_ball(self, game_state):
         game_state['ball_x'] = 0.5
