@@ -1,5 +1,5 @@
-# Use an official Python runtime as the base image
-FROM python:3.7-slim
+# Stage 1: Base Python Setup
+FROM python:3.7-slim AS base
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE 1
@@ -12,6 +12,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libc6-dev \
+    nginx \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the requirements file into the container
@@ -27,8 +28,13 @@ COPY . .
 # Collect static files
 RUN python manage.py collectstatic --noinput
 
-# Expose the port the app runs on
-EXPOSE 8000
+# NGINX configuration
+RUN rm /etc/nginx/sites-enabled/default
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-# Run the application
-CMD ["daphne", "-b", "0.0.0.0", "-p", "8000", "pong_game.asgi:application"]
+# Expose the port for NGINX (80) and Daphne (8000)
+EXPOSE 80 8000
+
+# Start both NGINX and Daphne
+CMD service nginx start && daphne -b 0.0.0.0 -p 8000 pong_game.asgi:application
+
