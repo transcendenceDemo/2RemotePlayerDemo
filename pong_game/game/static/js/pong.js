@@ -1,3 +1,4 @@
+"use client"
 
 const canvas = document.getElementById('pong-canvas');
 const ctx = canvas.getContext('2d');
@@ -7,7 +8,7 @@ const messageElement = document.getElementById('message');
 
 const paddleWidth = 10;
 const paddleHeight = 100;
-const ballSize = 10; // Increased ball size from 10 to 20
+const ballSize = 10;
 
 let gameId;
 let socket;
@@ -16,18 +17,27 @@ let gameState = {
     player2_score: 0,
     ball_x: 0.5,
     ball_y: 0.5,
+    ball_dx: 0.005,
+    ball_dy: 0.005,
     paddle1_y: 0.5,
     paddle2_y: 0.5
 };
 
-const paddleSpeed = 0.02; // Adjust this value for paddle speed
-let paddle2Direction = 0; // 1 for down, -1 for up, 0 for stationary
-
-
-
+const paddleSpeed = 0.02;
+let paddle2Direction = 0;
 
 let gameStarted = false;
 let playerNumber;
+
+let lastUpdateTime = 0;
+const FPS = 60;
+const frameDelay = 1000 / FPS;
+
+let lastServerUpdate = null;
+let clientPrediction = {
+    paddle1_y: 0.5,
+    paddle2_y: 0.5
+};
 
 function initGame() {
     fetch('/api/game/', { method: 'POST' })
@@ -35,7 +45,7 @@ function initGame() {
         .then(data => {
             gameId = data.game_id;
             playerNumber = data.player_number;
-            socket = new WebSocket(`wss://${window.location.host}/ws/game/${gameId}/`);
+            socket = new WebSocket(`ws://${window.location.host}/ws/game/${gameId}/`);
             socket.onmessage = (event) => {
                 const data = JSON.parse(event.data);
                 
@@ -52,7 +62,7 @@ function initGame() {
                     updateGameState(data);
                 }
             };
-            gameLoop();
+            requestAnimationFrame(gameLoop);
             
             if (playerNumber === 1) {
                 displayMessage("Waiting for another player to join...");
@@ -62,76 +72,94 @@ function initGame() {
         });
 }
 
-
-// Remove the handleKeyDown and handleKeyUp functions, as both players will now use the mouse
-
-// ... (rest of the JavaScript code remains the same)
-
-
-
-
 function displayMessage(message) {
     messageElement.textContent = message;
     messageElement.style.display = 'block';
 }
 
-function gameLoop() {
+function gameLoop(currentTime) {
+    requestAnimationFrame(gameLoop);
+
+    const deltaTime = currentTime - lastUpdateTime;
+    if (deltaTime < frameDelay) return;
+
+    lastUpdateTime = currentTime - (deltaTime % frameDelay);
+
     if (gameStarted) {
         updatePaddlePositions();
+        updateBallPosition(deltaTime / 1000);
         drawGame();
     }
-    requestAnimationFrame(gameLoop);
 }
-
-// ... (rest of the JavaScript code remains the same)
-
-
 
 function updateGameState(newState) {
+    lastServerUpdate = newState;
     Object.assign(gameState, newState);
+    
+    // Update client prediction with server state
+    clientPrediction.paddle1_y = newState.paddle1_y;
+    clientPrediction.paddle2_y = newState.paddle2_y;
 }
 
-
 function updatePaddlePositions() {
-    // Update the position of the second paddle based on the direction
-    gameState.paddle2_y = Math.max(0.1, Math.min(0.9, gameState.paddle2_y + paddle2Direction * paddleSpeed));
+    const paddleToUpdate = playerNumber === 1 ? 'paddle1_y' : 'paddle2_y';
+    const newPaddleY = Math.max(0.1, Math.min(0.9, clientPrediction[paddleToUpdate] + paddle2Direction * paddleSpeed));
     
-    if (socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({ paddle2_y: gameState.paddle2_y }));
+    if (Math.abs(newPaddleY - clientPrediction[paddleToUpdate]) > 0.001) {
+        clientPrediction[paddleToUpdate] = newPaddleY;
+        if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ [paddleToUpdate]: newPaddleY }));
+        }
+    }
+}
+
+function updateBallPosition(deltaTime) {
+    if (lastServerUpdate) {
+        gameState.ball_x += gameState.ball_dx * deltaTime * 60;
+        gameState.ball_y += gameState.ball_dy * deltaTime * 60;
     }
 }
 
 function drawGame() {
-    // Clear canvas
+    const interpolatedState = interpolateGameState(gameState, clientPrediction);
+
     ctx.fillStyle = 'black';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Draw paddles
     ctx.fillStyle = 'white';
-    ctx.fillRect(0, gameState.paddle1_y * canvas.height - paddleHeight / 2, paddleWidth, paddleHeight);
-    ctx.fillRect(canvas.width - paddleWidth, gameState.paddle2_y * canvas.height - paddleHeight / 2, paddleWidth, paddleHeight);
+    ctx.fillRect(0, interpolatedState.paddle1_y * canvas.height - paddleHeight / 2, paddleWidth, paddleHeight);
+    ctx.fillRect(canvas.width - paddleWidth, interpolatedState.paddle2_y * canvas.height - paddleHeight / 2, paddleWidth, paddleHeight);
 
-    // Draw ball
-    ctx.fillStyle = 'red'; // Changed ball color to red
+    ctx.fillStyle = 'red';
     ctx.beginPath();
-    ctx.arc(gameState.ball_x * canvas.width, gameState.ball_y * canvas.height, ballSize, 0, Math.PI * 2);
+    ctx.arc(interpolatedState.ball_x * canvas.width, interpolatedState.ball_y * canvas.height, ballSize, 0, Math.PI * 2);
     ctx.fill();
 
-    // Update score display
-    player1ScoreElement.textContent = gameState.player1_score;
-    player2ScoreElement.textContent = gameState.player2_score;
+    player1ScoreElement.textContent = interpolatedState.player1_score;
+    player2ScoreElement.textContent = interpolatedState.player2_score;
 }
 
-// Modify the handleMouseMove function to only control the correct paddle
+function interpolateGameState(serverState, clientState) {
+    const interpolationFactor = 0.3;
+    return {
+        ball_x: serverState.ball_x,
+        ball_y: serverState.ball_y,
+        paddle1_y: serverState.paddle1_y + (clientState.paddle1_y - serverState.paddle1_y) * interpolationFactor,
+        paddle2_y: serverState.paddle2_y + (clientState.paddle2_y - serverState.paddle2_y) * interpolationFactor,
+        player1_score: serverState.player1_score,
+        player2_score: serverState.player2_score
+    };
+}
+
 function handleMouseMove(event) {
     const rect = canvas.getBoundingClientRect();
     const mouseY = (event.clientY - rect.top) / canvas.height;
     const paddleY = Math.max(0.1, Math.min(0.9, mouseY));
     
     if (playerNumber === 1) {
-        gameState.paddle1_y = paddleY;
+        clientPrediction.paddle1_y = paddleY;
     } else {
-        gameState.paddle2_y = paddleY;
+        clientPrediction.paddle2_y = paddleY;
     }
     
     if (socket.readyState === WebSocket.OPEN) {
@@ -142,18 +170,16 @@ function handleMouseMove(event) {
 }
 
 function handleKeyDown(event) {
-    // Move right paddle up and down using arrow keys
     if (event.key === 'ArrowUp') {
-        paddle2Direction = -1; // Move up
+        paddle2Direction = -1;
     } else if (event.key === 'ArrowDown') {
-        paddle2Direction = 1; // Move down
+        paddle2Direction = 1;
     }
 }
 
 function handleKeyUp(event) {
-    // Stop moving the paddle when the key is released
     if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
-        paddle2Direction = 0; // Stop moving
+        paddle2Direction = 0;
     }
 }
 
@@ -171,24 +197,24 @@ function displayGameOverMessage(message) {
     gameOverDiv.style.color = '#721c24';
     document.body.appendChild(gameOverDiv);
 
-    // Close the WebSocket connection
     if (socket && socket.readyState === WebSocket.OPEN) {
         socket.close();
     }
 
-    // Optionally disable further interactions in the game
     disableGameControls();
 }
 
 function disableGameControls() {
     canvas.removeEventListener('mousemove', handleMouseMove);
+    document.removeEventListener('keydown', handleKeyDown);
+    document.removeEventListener('keyup', handleKeyUp);
 }
 
-// Set canvas size
 canvas.width = 800;
 canvas.height = 400;
 
 canvas.addEventListener('mousemove', handleMouseMove);
+document.addEventListener('keydown', handleKeyDown);
+document.addEventListener('keyup', handleKeyUp);
 
 initGame();
-
