@@ -6,7 +6,6 @@ from .models import Game
 import asyncio
 import time
 
-
 class GameConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self.game_id = self.scope['url_route']['kwargs']['game_id']
@@ -29,17 +28,6 @@ class GameConsumer(AsyncWebsocketConsumer):
         elif player_count == 2:
             # Start the game when the second player joins
             await self.start_game()
-    def interpolate_game_state(self, previous_state, current_state, alpha):
-        return {
-        'ball_x': previous_state['ball_x'] + (current_state['ball_x'] - previous_state['ball_x']) * alpha,
-        'ball_y': previous_state['ball_y'] + (current_state['ball_y'] - previous_state['ball_y']) * alpha,
-        'paddle1_y': previous_state['paddle1_y'] + (current_state['paddle1_y'] - previous_state['paddle1_y']) * alpha,
-        'paddle2_y': previous_state['paddle2_y'] + (current_state['paddle2_y'] - previous_state['paddle2_y']) * alpha,
-        'player1_score': current_state['player1_score'],
-        'player2_score': current_state['player2_score'],
-        'ball_dx': current_state['ball_dx'],
-        'ball_dy': current_state['ball_dy'],
-         }
 
     async def disconnect(self, close_code):
         # Leave the game group
@@ -111,20 +99,30 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'message': await self.get_game_state()
             }
         )
-    
-    async def game_update(self, event):
-       message = event['message']
-       previous_state = await self.get_game_state()
-       current_state = message
-    
-       # Send multiple interpolated states
-       for i in range(3):  # Send 3 interpolated states
-          alpha = (i + 1) / 3
-          interpolated_state = self.interpolate_game_state(previous_state, current_state, alpha)
-          await self.send(text_data=json.dumps(interpolated_state))
-          await asyncio.sleep(0.016)  # Wait for about 16ms between updates
-   
 
+    async def game_update(self, event):
+        message = event['message']
+        previous_state = await self.get_game_state()
+        current_state = message
+        
+        # Send multiple interpolated states
+        for i in range(3):  # Send 3 interpolated states
+            alpha = (i + 1) / 3
+            interpolated_state = self.interpolate_game_state(previous_state, current_state, alpha)
+            await self.send(text_data=json.dumps(interpolated_state))
+            await asyncio.sleep(0.016)  # Wait for about 16ms between updates
+
+    def interpolate_game_state(self, previous_state, current_state, alpha):
+        return {
+            'ball_x': previous_state.get('ball_x', 0.5) + (current_state.get('ball_x', 0.5) - previous_state.get('ball_x', 0.5)) * alpha,
+            'ball_y': previous_state.get('ball_y', 0.5) + (current_state.get('ball_y', 0.5) - previous_state.get('ball_y', 0.5)) * alpha,
+            'paddle1_y': previous_state.get('paddle1_y', 0.5) + (current_state.get('paddle1_y', 0.5) - previous_state.get('paddle1_y', 0.5)) * alpha,
+            'paddle2_y': previous_state.get('paddle2_y', 0.5) + (current_state.get('paddle2_y', 0.5) - previous_state.get('paddle2_y', 0.5)) * alpha,
+            'player1_score': current_state.get('player1_score', 0),
+            'player2_score': current_state.get('player2_score', 0),
+            'ball_dx': current_state.get('ball_dx', 0.005),
+            'ball_dy': current_state.get('ball_dy', 0.005),
+        }
 
     async def update_ball_position(self):
         FIXED_TIME_STEP = 1 / 60  # 60 FPS
@@ -226,36 +224,29 @@ class GameConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def save_game_state(self, game_state):
-            """
-            Save the updated game state to the cache.
-            """
-            cache.set(f'game_state_{self.game_id}', game_state)
-    # Continuation of the previous GameConsumer
-    
-   # @database_sync_to_async
+        """
+        Save the updated game state to the cache.
+        """
+        cache.set(f'game_state_{self.game_id}', game_state)
+
     async def end_game(self, game_state):
         """
         End the game and store the final result in the database.
         """
-        # Fetch the game instance from the database
-        #game = Game.objects.get(id=self.game_id)
         game = await database_sync_to_async(Game.objects.get)(id=self.game_id)
-        # Update the game instance with the final score
         game.player1_score = game_state['player1_score']
         game.player2_score = game_state['player2_score']
     
-        # Save the game result to the database
-        #game.save()
         await database_sync_to_async(game.save)()
-        # Notify the clients that the game has ended
+        
         final_state = {
             'player1_score': game.player1_score,
             'player2_score': game.player2_score,
             'winner': 'Player 1' if game.player1_score == 5 else 'Player 2',
             'game_over': True
         }
-        print("hallo: ",  final_state)
-        # Broadcast the final game state
+        print("Game ended:", final_state)
+        
         await self.channel_layer.group_send(
             self.game_group_name,
             {
@@ -264,6 +255,4 @@ class GameConsumer(AsyncWebsocketConsumer):
             }
         )
     
-        # Clear the cached game state
         cache.delete(f'game_state_{self.game_id}')
-
