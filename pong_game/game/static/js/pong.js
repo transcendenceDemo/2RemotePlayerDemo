@@ -35,7 +35,7 @@ function initGame() {
         .then(data => {
             gameId = data.game_id;
             playerNumber = data.player_number;
-            socket = new WebSocket(`ws://${window.location.host}/ws/game/${gameId}/`);
+            socket = new WebSocket(`wss://${window.location.host}/ws/game/${gameId}/`);
             socket.onmessage = (event) => {
                 const data = JSON.parse(event.data);
                 
