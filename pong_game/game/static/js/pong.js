@@ -164,11 +164,11 @@ function drawGame() {
     player1ScoreElement.textContent = interpolatedState.player1_score;
     player2ScoreElement.textContent = interpolatedState.player2_score;
     // Add this to your drawGame function
-	ctx.fillStyle = 'white';
+/*	ctx.fillStyle = 'white';
 	ctx.font = '12px Arial';
 	ctx.fillText(`Ball Velocity: ${ballVelocity.x.toFixed(3)}, ${ballVelocity.y.toFixed(3)}`, 10, 20);
 	ctx.fillText(`Last Update: ${Date.now() - lastBallUpdate.time}ms ago`, 10, 40);
-}
+*/}
 
 function interpolateGameState(serverState, clientState) {
     const now = Date.now();
